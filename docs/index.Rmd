@@ -1,0 +1,398 @@
+---
+title: "Tidy Tuesday - Bees"
+author: "Richard Ryan"
+date: '2022-05-21'
+output: 
+   html_document:
+      css: style.css
+      theme: readable
+      highlight: pygments
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+   echo = TRUE, 
+   message = FALSE, 
+   warning = FALSE, 
+   paged.print = FALSE
+)
+```
+
+```{r}
+library(tidyverse)
+library(scales)
+library(infer)
+library(moments)
+```
+
+<body style="background-color:#fcfbff;">
+
+Read in the datasets:
+
+```{r}
+colony <- read_csv("colony.csv")
+stressor <- read_csv("stressor.csv")
+```
+
+Join the datasets:
+
+```{r}
+bees <- stressor %>% 
+   left_join(colony, by = c("year", "months", "state"))
+```
+
+We can now try to make sense of our data.
+
+# Data Cleaning
+
+```{r}
+glimpse(bees)
+```
+
+We can see that we have data for each state separately and that the data is split into quarters. For now let's leave the `year` and `months` variables and focus on `state`. What we will notice is that there is a values for `United States` which is presumably a summary of the data for the individual states. 
+
+The problem is that we can't really take the summary information on trust here, and we can always calculate this data ourselves. Therefore we shall `filter()` these values out:
+
+```{r}
+bees <- bees %>% 
+   filter(state != "United States")
+```
+
+Next let's consider missing values:
+
+```{r}
+bees %>% 
+   summarise(across(everything(), ~sum(is.na(.x)))) %>% 
+   pivot_longer(cols = everything(),
+                names_to = "variable",
+                values_to = "totals") %>% 
+   arrange(-totals)
+```
+
+The `colony_n` feature is essential to any kind of analysis, so we can drop any `NA` values here:
+
+```{r}
+bees <- bees %>% 
+   drop_na(colony_n)
+```
+
+The `colony_lost_pct` and the `colony_reno_pct` are easily imputed:
+
+```{r}
+bees <- bees %>% 
+   mutate(colony_lost_pct = if_else(
+      is.na(colony_lost_pct),
+      100 * (colony_lost / colony_n),
+      colony_lost_pct
+   ))
+   
+bees <- bees %>% 
+   mutate(colony_reno_pct = if_else(
+      is.na(colony_reno_pct),
+      100 * (colony_reno / colony_n),
+      colony_reno_pct
+   ))
+```
+
+All other `NA`s can be replaced with zero:
+
+```{r}
+bees <- bees %>% 
+   mutate(across(where(is.numeric), ~replace_na(.x, 0)))
+```
+
+Two final corrections: (1) there is a spelling mistake in the `stressor` values; and (2) we need to convert the `stressor` variable to a factor for plotting:
+
+```{r}
+stressor_levels <- c("Varroa Mites", "Other Pests", "Pesticides", "Other", "Unknown", "Disease")
+```
+
+```{r}
+bees <- bees %>%
+   mutate(stressor = case_when(
+      stressor == "Other pests/parasites" ~ "Other Pests",
+      stressor == "Disesases" ~ "Disease",
+      TRUE ~ stressor
+   )) %>% 
+   mutate(stressor = str_to_title(stressor)) %>% 
+   mutate(stressor = factor(stressor, levels = stressor_levels))
+```
+
+Perhaps the most obvious problem with this data is that the colony numbers for each state are highly variable from one quarter to the next. Certainly this variability isn't explained by the accompanying metrics for `colony_added`, `colony_lost` and `colony_reno`. A possible reason for these figures is the tendency for bee-keepers to move their colonies across state lines from one season to another.
+
+What this means is that we can't afford to be too fine-grained in our analysis with regard to individual states. 
+
+# Exploratory Data Analysis
+
+First let's look at the various threats facing bee populations. 
+
+```{r}
+bees %>% 
+   group_by(stressor) %>% 
+   mutate(
+      totals = n(),
+      total_pct_stressors = round(sum(stress_pct / totals), 2)
+   ) %>% 
+   ungroup() %>% 
+   select(stressor, total_pct_stressors) %>% 
+   distinct() %>%
+   mutate(stressor = factor(stressor, levels = stressor_levels)) %>% 
+   ggplot(aes(x = fct_rev(stressor), y = total_pct_stressors, fill = stressor)) + 
+   geom_point(size = 3, colour = "#456355", show.legend = FALSE) +
+   geom_segment(
+      aes(x = stressor, xend = stressor, y = 0, yend = total_pct_stressors), 
+      colour = "#456355",
+      size = 1.75
+   ) + 
+   theme_bw() + 
+   scale_y_continuous(labels = label_percent(scale = 1)) + 
+   labs(x = NULL, y = NULL, 
+        title = "The prevalence of various threats to Bee populations",
+        subtitle = "Showing the percentage of colonies affected by each stressor") +
+   theme(axis.text.x = element_text(face = "bold", size = 11),
+         axis.text.y = element_text(face = "bold", size = 11),
+         plot.title = element_text(face = "bold", size = 14)) +
+   coord_flip()
+```
+
+How have the above threats translated into the number of bee colonies? We can see by comparing the `colony_added` and the `colony_lost` features for each year. Here let's first calculate the total of bee colonies gained and lost across all states for each year; then we can use `cumsum()` to calculate the cumulative sum across the whole of our data.
+
+```{r}
+bees %>% 
+   select(year, colony_added, colony_lost) %>%
+   distinct() %>%
+   group_by(year) %>% 
+   mutate(colony_added = sum(colony_added),
+          colony_lost = sum(colony_lost)) %>% 
+   ungroup() %>% distinct() %>% 
+   mutate(colony_added = cumsum(colony_added),
+          colony_lost = cumsum(colony_lost)) %>% 
+   pivot_longer(cols = starts_with("col"),
+                names_to = "type",
+                values_to = "value") %>% 
+   ggplot(aes(x = as.character(year), y = value, fill = type)) + 
+   geom_col(position = position_dodge(), alpha = 0.5, colour = "black") +
+   theme_bw() + 
+   scale_fill_manual(values = c("#CB9E23", "#456355"),
+                     labels = c("Colonies Added", "Colonies Lost")) + 
+   scale_y_continuous(labels = label_comma()) + 
+   labs(x = NULL, y = NULL,
+        title = "The cumulative sum of Bee colonies added and lost",
+        subtitle = "Showing numbers from the 1st Quarter of 2015 to the 2nd Quarter of 2021") + 
+   theme(axis.text.x = element_text(size = 11, face = "bold"),
+         axis.text.y = element_text(size = 11, face = "bold"),
+         plot.title = element_text(size = 14, face = "bold"),
+         legend.text = element_text(face = "bold"),
+         legend.title = element_blank(),
+         legend.position = "bottom")
+   
+```
+
+As we can see, the total number of bees added is slightly more than the total lost. 
+
+Of course we shouldn't use this finding to lend support to the idea that there isn't a problem. Clearly the loss of such large numbers of bees would be disastrous without bee-keepers making very significant interventions. Indeed, one of the problem with the above plot is that it doesn't show just how volatile the bee population actually is. 
+
+Consider the following graph that shows quarterly gains and losses:
+
+```{r}
+bees %>% 
+   select(year, months, colony_added, colony_lost) %>%
+   distinct() %>%
+   group_by(year, months) %>% 
+   mutate(colony_added = sum(colony_added),
+          colony_lost = sum(colony_lost)) %>% 
+   ungroup() %>% distinct() %>%
+   mutate(net_gain = colony_added - colony_lost) %>% 
+   mutate(Quarters = seq(colony_added)) %>%
+   mutate(above_zero = net_gain < 0) %>% 
+   ggplot(aes(x = Quarters, y = net_gain, fill = above_zero)) +
+   geom_col(alpha = 0.5, colour = "black") + 
+   geom_hline(yintercept = 0) + 
+   theme_bw() + 
+   scale_fill_manual(values = c("#CB9E23", "#456355"),
+                     labels = c("Bee colony gains", "Bee colony losses")) +
+   scale_y_continuous(labels = label_comma()) + 
+   scale_x_continuous(labels = label_ordinal()) + 
+   labs(y = NULL,
+        title = "The number of bee colonies gained and lost by Quarter",
+        subtitle = "Showing nationwide losses and gains in bee colonies") + 
+   theme(axis.title.x = element_text(size = 12, face = "bold"),
+         axis.text.x = element_text(size = 8, face = "bold"),
+         axis.text.y = element_text(size = 10, face = "bold"),
+         plot.title = element_text(size = 14, face = "bold"),
+         legend.text = element_text(face = "bold"),
+         legend.title = element_blank(),
+         legend.position = "bottom")
+```
+
+We have seen that bee colonies are under threat but have been kept from a catastrophic decline by the efforts of bee-keepers. We might now wonder whether there is any difference from state to state. Are some states blessed with environmental conditions that make it easier to maintain healthy colonies of bees? Does the quality of bee-keeping vary across states?
+
+To answer these questions, let's look at all states that have housed a total more than half a million bee colonies across the time period covered by our data. 
+
+```{r}
+bees %>% 
+   select(state, colony_n, colony_lost, colony_added) %>% 
+   distinct() %>% 
+   group_by(state) %>% 
+   mutate(total_colonies = sum(colony_n, na.rm = TRUE),
+          total_added = sum(colony_added, na.rm = TRUE),
+          total_lost = sum(colony_lost, na.rm = TRUE)) %>% 
+   select(state, starts_with("total_")) %>%
+   ungroup() %>% distinct() %>%
+   filter(total_colonies > 5e5) %>% 
+   mutate(percent_change = (total_added - total_lost) / total_colonies,
+          state = fct_reorder(state, percent_change),
+          pos = percent_change < 0) %>% 
+   ggplot(aes(x = state, y = percent_change)) + 
+   geom_point(aes(colour = pos), size = 2.5) + 
+   geom_segment(aes(x = state, xend = state, y = 0, yend = percent_change, colour = pos), size = 1.5) +
+   scale_y_continuous(limits = c(-0.1, NA), labels = label_percent()) + 
+   scale_colour_manual(values = c("#CB9E23", "#456355"),
+                     labels = c("States with net gains", "States with net loses")) + 
+   labs(x = NULL, y = NULL,
+        title = "Gains and losses in the Bee population by state since 2015",
+        subtitle = "Showing percentage gains and losses by states with more than than 500k colonies") + 
+   theme_bw() + 
+   theme(axis.text.x = element_text(face = "bold"),
+         axis.text.y = element_text(face = "bold"),
+         legend.text = element_text(face = "bold"),
+         legend.title = element_blank(),
+         legend.position = "bottom") +
+   coord_flip()
+```
+
+# Conclusion
+
+We have explored our data and can now attempt to draw some basic conclusions as to the gains and losses of colonies. Now we shall use the `infer()` package to test for statistical significance. As we have seen, the number of colonies actually increased between the first quarter of 2015 and the second quarter of 2021. Is this increase in colonies statistically significant?
+
+Let's first prepare our data. We shall create a feature showing the gain (or loss) by quarter for each state.  
+
+```{r}
+bee_distrib <- bees %>% 
+   select(year, months, state, colony_n, colony_lost, colony_added) %>% 
+   distinct() %>% 
+   group_by(year, months, state) %>% 
+   mutate(total = sum(colony_added - colony_lost)) %>% 
+   ungroup() 
+```
+
+First let's see whether the `total` variable is normally distributed:
+
+```{r}
+bee_distrib %>%
+   pull(total) %>% 
+   skewness()
+```
+
+As we can see, the distribution is normal. 
+
+Our null_hypothesis here is that mu = 0. In other words, we are assuming that the increase in colonies is not statistically significant. We now see whether that assumption holds up:
+
+```{r}
+bee_distrib %>% t_test(response = total, mu = 0)
+```
+
+Here the `t_test()` function is taken from the `infer` package. It has a big advantage over the base `t.test()` in that it returns the output in a tidy format. 
+
+As we can see, the `p-value` is very high, so we have no reason to believe the null_hypothisis is false. In other words, although the number of bee colonies increased from 2015 to 2021, we have no reason to believe that this increase wasn't due to simple variance. 
+
+But what about the better performing states, such as Texas? We have seen that Texas is the best state for increasing the number of bee colonies; but is this increase also due to variance or does it instead have some statistical significance?
+
+We first `filter()` our `bee_distrib` dataframe, limiting our data to the state of Texas:
+
+```{r}
+texas <- bee_distrib %>% 
+   filter(state == "Texas") %>% 
+   select(total)
+```
+
+Now we test for skew:
+
+```{r}
+texas %>% 
+   pull(total) %>% 
+   skewness()
+```
+
+Here the distribution is far from normal. Often this doesn't make too much difference, but in this case, given we don't have a particularly large sample to work with, a different approach might be better. What we shall do is use the `infer` package to generate a larger dataset by way of bootstrap resampling.
+
+```{r}
+x_bar <- 
+   texas %>% 
+   specify(response = total) %>% 
+   calculate(stat = "mean")
+
+null_dist <- 
+   texas %>% 
+   specify(response = total) %>% 
+   hypothesise(null = "point", mu = 0) %>% 
+   generate(reps = 10000, type = "bootstrap") %>% 
+   calculate(stat = "mean")
+```
+
+This produces a distribution much closer to normal:
+
+```{r}
+null_dist %>% 
+   pull(stat) %>% 
+   skewness()
+```
+
+We then run the hypothesis test:
+
+```{r}
+null_dist %>% 
+   get_p_value(obs_stat = x_bar, direction = "two-sided")
+```
+
+Here we have very good reason to reject the null hypothesis. The increase in bee colonies in the state of Texas is very unlikely to be down to variance in this case. 
+
+We can also run the `t_test()` function to see whether a more theoretical approach would produce any difference in outcome:
+
+```{r}
+texas %>% t_test(response = total, mu = 40)
+```
+
+We arrive at a slightly different figure, but the conclusion would be exactly the same.
+
+An obvious question to ask at this point is whether this superiority is down to environmental factors, to the excellence of its bee-keepers, or to some combination of the two. Unfortunately our data is not detailed enough to even attempt an answer. 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
