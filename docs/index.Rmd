@@ -7,6 +7,10 @@ output:
       css: style.css
       theme: readable
       highlight: pygments
+      toc: true
+      toc_depth: 3
+      toc_float: true
+      number_sections: true
 ---
 
 ```{r setup, include=FALSE}
@@ -25,7 +29,7 @@ library(infer)
 library(moments)
 ```
 
-<body style="background-color:#fcfbff;">
+<body style="background-color:#ede8df;">
 
 Read in the datasets:
 
@@ -261,7 +265,7 @@ bees %>%
    coord_flip()
 ```
 
-# Conclusion
+# Statistical Conclusions
 
 We have explored our data and can now attempt to draw some basic conclusions as to the gains and losses of colonies. Now we shall use the `infer()` package to test for statistical significance. As we have seen, the number of colonies actually increased between the first quarter of 2015 and the second quarter of 2021. Is this increase in colonies statistically significant?
 

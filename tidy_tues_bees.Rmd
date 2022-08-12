@@ -2,11 +2,8 @@
 title: "Tidy Tuesday - Bees"
 author: "Richard Ryan"
 date: '2022-05-21'
-output: 
-   html_document:
-      css: style.css
-      theme: readable
-      highlight: pygments
+output: html_document
+
 ---
 
 ```{r setup, include=FALSE}
@@ -24,8 +21,6 @@ library(scales)
 library(infer)
 library(moments)
 ```
-
-<body style="background-color:#fcfbff;">
 
 Read in the datasets:
 
